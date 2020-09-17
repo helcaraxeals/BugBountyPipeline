@@ -98,7 +98,54 @@ class _GetSubdomainsFromData(GetSubdomainsFromDomains.GetSubdomainsFromDomains):
         return luigi.LocalTarget(f'/tmp/recon-collect_and_sort_domains-{self.nonce_token}.complete')
 
 
+@luigi.util.inherits(_GetDataFromSource)
+class _AlienvaultExecutor(AlienvaultExecutor.AlienvaultExecutor):
+
+    def requires(self):
+        return _GetSubdomainsFromData(nonce_token=self.nonce_token, data_source=self.data_source)
+
+    def output(self):
+        return luigi.LocalTarget(f'/tmp/recon-alienvault_executor-{self.nonce_token}.complete')
+
+
+@luigi.util.inherits(_GetDataFromSource)
+class _WaybackurlsExecutor(WaybackurlsExecutor.WaybackurlsExecutor):
+
+    def requires(self):
+        return _GetSubdomainsFromData(nonce_token=self.nonce_token, data_source=self.data_source)
+
+    def output(self):
+        return luigi.LocalTarget(f'/tmp/recon-waybackurls_executor-{self.nonce_token}.complete')
+
+
+@luigi.util.inherits(_GetDataFromSource)
+class _GetEndpointsFromSubdomains(GetEndpointsFromSubdomains.GetEndpointsFromSubdomains):
+
+    def requires(self):
+        return {
+            'task_a': _AlienvaultExecutor(nonce_token=self.nonce_token, data_source=self.data_source),
+            'task_b': _WaybackurlsExecutor(nonce_token=self.nonce_token, data_source=self.data_source),
+        }
+
+    def store(self, data: dict):
+        my_db = return_database_handler()
+        my_cursor = my_db.cursor()
+        for _endpoint in data['endpoint']:
+            domain_parts = tldextract.extract(_endpoint)
+            domain = f'{domain_parts.domain}.{domain_parts.suffix}'
+            subdomain = f'{domain_parts.subdomain}.{domain_parts.domain}.{domain_parts.suffix}'.lstrip('.')
+            sql = f"INSERT IGNORE INTO endpoints (id, domain, subdomain, endpoint) VALUES (NULL, %s, %s, %s)"
+            val = (domain, subdomain, _endpoint)
+            my_cursor.execute(sql, val)
+            my_db.commit()
+
+    def output(self):
+        return luigi.LocalTarget(f'/tmp/recon-get_endpoints_from_subdomains-{self.nonce_token}.complete')
+
+
 if __name__ == '__main__':
     token: str = generate_token()
     data_source: str = '/tmp/targets.txt'
-    luigi.build([_GetSubdomainsFromData(nonce_token=token, data_source=data_source)], local_scheduler=True, workers=3)
+    luigi.build([_GetEndpointsFromSubdomains(
+        nonce_token=token,
+        data_source=data_source)], local_scheduler=True, workers=3)
